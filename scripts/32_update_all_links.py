@@ -42,11 +42,17 @@ def update_all_links():
         if not os.path.exists(directory):
             continue
 
+        updates_dir = os.path.join(directory, "_updates")
+
         for filename in os.listdir(directory):
+            filepath = os.path.join(directory, filename)
+            
             if not filename.endswith(".md") or filename.endswith(".update.md"):
                 continue
+
+            if not filename.endswith(".md"):
+                continue
                 
-            filepath = os.path.join(directory, filename)
             with open(filepath, "r", encoding="utf-8") as f:
                 content = f.read()
 
@@ -83,11 +89,40 @@ def update_all_links():
             # Matching "- [[link]] : rest of line"
             new_content = re.sub(r'-\s+\[\[(.*?)\]\]\s*:\s*(.*)', link_replacer, content)
 
+            # 2. Update forward links in main profile to .update.md
+            base_name = filename.replace(".md", "")
+            update_file = os.path.join(updates_dir, f"{base_name}.update.md")
+            if os.path.exists(update_file) and "**Update History:**" not in new_content:
+                parts = new_content.rsplit("\n---\n", 1)
+                if len(parts) == 2:
+                    new_content = parts[0] + f"\n---\n**Update History:** [[{base_name}.update|View Logs]]\n\n" + parts[1].lstrip()
+
             if new_content != content:
                 with open(filepath, "w", encoding="utf-8") as f:
                     f.write(new_content)
                 updated_count += 1
                 print(f"  Fixed links in {filename}")
+
+    # Process backlinks in _updates folder
+    for directory in search_dirs:
+        updates_dir = os.path.join(directory, "_updates")
+        if not os.path.exists(updates_dir):
+            continue
+            
+        for filename in os.listdir(updates_dir):
+            if not filename.endswith(".update.md"):
+                continue
+                
+            filepath = os.path.join(updates_dir, filename)
+            base_name = filename.replace(".update.md", "")
+            with open(filepath, "r", encoding="utf-8") as f:
+                content = f.read()
+            if "**Main Profile:**" not in content:
+                new_content = f"**Main Profile:** [[{base_name}]]\n\n" + content
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write(new_content)
+                updated_count += 1
+                print(f"  Added backlink to {filename}")
 
     print(f"\n✅ Successfully updated links and metadata in {updated_count} cards.")
 

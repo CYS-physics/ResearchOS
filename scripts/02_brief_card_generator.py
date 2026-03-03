@@ -9,8 +9,10 @@ from google import genai
 env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.env"))
 load_dotenv(dotenv_path=env_path)
 
-gemini_api_key = os.getenv("GEMINI_API_KEY")
-client = genai.Client(api_key=gemini_api_key) if gemini_api_key else None
+# Initialize API clients
+gemini_keys = [v for k, v in os.environ.items() if k.startswith("GEMINI_API_KEY") and v.strip()]
+gemini_clients = [genai.Client(api_key=key) for key in gemini_keys]
+current_gemini_index = 0
 
 openai_api_key = os.getenv("OPENAI_API_KEY")
 openai_client = openai.OpenAI(api_key=openai_api_key) if openai_api_key else None
@@ -20,7 +22,11 @@ OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../02_card
 BRAIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../brain"))
 
 def run_llm_prompt(prompt: str) -> str:
-    if client:
+    global current_gemini_index
+    
+    # Try Gemini clients first, rotating if we hit a 429 quota exhaustion
+    while current_gemini_index < len(gemini_clients):
+        client = gemini_clients[current_gemini_index]
         try:
             response = client.models.generate_content(
                 model='gemini-2.5-flash',
@@ -28,7 +34,17 @@ def run_llm_prompt(prompt: str) -> str:
             )
             return response.text.strip()
         except Exception as e:
-            print(f"  Gemini API failed: {e}. Falling back to OpenAI...")
+            error_str = str(e)
+            if "429" in error_str and "RESOURCE_EXHAUSTED" in error_str:
+                print(f"  Gemini API Key {current_gemini_index + 1} exhausted (429). Rotating to next key...")
+                current_gemini_index += 1
+                continue # Try the next key in the loop
+            else:
+                print(f"  Gemini API failed: {e}. Falling back to OpenAI...")
+                break # Non-quota error, jump to OpenAI fallback
+                
+    if current_gemini_index >= len(gemini_clients) and gemini_clients:
+        print("  All Gemini API keys exhausted.")
             
     if openai_client:
         try:
@@ -150,18 +166,30 @@ Output valid Markdown format. Do not wrap it in ```markdown codeblocks. Provide 
             print(f"  Failed to get a response for {citekey}. Skipping.")
             continue
 
+        # Extract manual notes if any
+        manual_notes = "\n\n## ✍️ Manual Notes\n*(Add your manual notes here - this section will not be overwritten by AI)*\n"
+        if os.path.exists(filepath_out):
+            with open(filepath_out, "r", encoding="utf-8") as existing_f:
+                existing_content = existing_f.read()
+                if "## ✍️ Manual Notes" in existing_content:
+                    manual_notes = "\n\n## ✍️ Manual Notes" + existing_content.split("## ✍️ Manual Notes", 1)[1]
+        elif "## ✍️ Manual Notes" in content:
+            manual_notes = "\n\n## ✍️ Manual Notes" + content.split("## ✍️ Manual Notes", 1)[1]
+
         # Append to content and replace status
         new_content = content.replace("status: brief", "status: brief_processed")
         new_content = new_content.replace("- status: brief", "- status: brief_processed")
+        if "## ✍️ Manual Notes" in new_content:
+            new_content = new_content.split("## ✍️ Manual Notes", 1)[0].strip()
         
         backlink = f"**Previous Version:** [[02_cards/quick/{citekey}|Quick Card]]\n\n"
         
         # Insert before the horizontal rule if it exists, otherwise at the end
-        if "---" in new_content.split("Abstract")[1]: # rough check
+        if len(new_content.split("Abstract")) > 1 and "---" in new_content.split("Abstract")[1]: # rough check
             parts = new_content.rsplit("\n---", 1)
-            final_content = parts[0] + "\n\n" + backlink + ai_response + "\n\n---" + parts[1]
+            final_content = parts[0] + "\n\n" + manual_notes.strip() + "\n\n" + backlink + ai_response + "\n\n---" + parts[1]
         else:
-            final_content = new_content + "\n\n" + backlink + ai_response
+            final_content = new_content + "\n\n" + manual_notes.strip() + "\n\n" + backlink + ai_response
 
         with open(filepath_out, "w", encoding="utf-8") as f:
             f.write(final_content)

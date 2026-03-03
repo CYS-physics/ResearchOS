@@ -11,6 +11,7 @@ OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../05_keyw
 DEEP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../03_deep"))
 BRIEF_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../02_cards"))
 QUICK_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../02_cards/quick"))
+ALIASES_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../01_zotero_export/aliases.json"))
 IGNORE_TAGS = {"quickcard", "briefcard", "deepcard", "paper", "unread", "processed", "researcher", "key_researchers"}
 
 def get_card_metadata(citekey: str) -> str:
@@ -46,6 +47,17 @@ def get_title_from_content(content, filename):
 def generate_keyword_cards():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
+    # Load aliases
+    import json
+    aliases = {}
+    if os.path.exists(ALIASES_PATH):
+        try:
+            with open(ALIASES_PATH, "r", encoding="utf-8") as f:
+                alias_data = json.load(f)
+                aliases = alias_data.get("keywords", {})
+        except Exception as e:
+            print(f"Warning: Could not read aliases.json: {e}")
+            
     keyword_papers = defaultdict(list)
     processed_citekeys = set() # Avoid double counting if a paper exists in multiple folders
 
@@ -80,12 +92,16 @@ def generate_keyword_cards():
                         for t in tags:
                             t = t.strip().strip('"\'')
                             if t and t.lower() not in IGNORE_TAGS:
-                                found_keywords.add(t.lower())
+                                kw_lower = t.lower()
+                                mapped_kw = aliases.get(kw_lower, kw_lower)
+                                found_keywords.add(mapped_kw)
                     elif tags_match.group(2): # Array format
                         tags = [t.strip().strip('"\'') for t in tags_match.group(2).split(',')]
                         for t in tags:
                             if t and t.lower() not in IGNORE_TAGS:
-                                found_keywords.add(t.lower())
+                                kw_lower = t.lower()
+                                mapped_kw = aliases.get(kw_lower, kw_lower)
+                                found_keywords.add(mapped_kw)
 
             # 2. Extract inline hashtags #keyword
             # \B ensures we don't start in the middle of a word, (?<!#) prevents matching ##
@@ -93,7 +109,8 @@ def generate_keyword_cards():
             for ht in hashtags:
                 ht_lower = ht.lower()
                 if ht_lower not in IGNORE_TAGS:
-                    found_keywords.add(ht_lower)
+                    mapped_ht = aliases.get(ht_lower, ht_lower)
+                    found_keywords.add(mapped_ht)
 
             if found_keywords:
                 processed_citekeys.add(citekey)
@@ -127,6 +144,7 @@ def generate_keyword_cards():
         # Check overwrite
         should_write = True
         existing_profile = ""
+        existing_processed_tags = set()
         if os.path.exists(filepath):
             with open(filepath, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -139,6 +157,14 @@ def generate_keyword_cards():
                     sub_parts = main_body.split("---")
                     if len(sub_parts) > 1:
                         existing_profile = "---".join(sub_parts[1:]).strip()
+                        
+                # Extract existing processed tags
+                for line in content.splitlines():
+                    match = re.search(r'-\s+\[\[(.*?)\]\]\s*\[PROCESSED\]', line)
+                    if match:
+                        link_target = match.group(1).split("|")[0]
+                        base_citekey = link_target.split("/")[-1].replace("_deep", "").replace(".md", "")
+                        existing_processed_tags.add(base_citekey)
 
         if not should_write:
             continue
@@ -146,7 +172,9 @@ def generate_keyword_cards():
         links = []
         for p in papers:
             formatted_title = get_card_metadata(p['citekey']).format(title=p['title'])
-            links.append(f"- [[{p['link_target']}]] : {formatted_title}")
+            
+            processed_marker = " [PROCESSED]" if p['citekey'] in existing_processed_tags else ""
+            links.append(f"- [[{p['link_target']}]]{processed_marker} : {formatted_title}")
         links_list = "\n".join(links)
 
         final_md = f"""---

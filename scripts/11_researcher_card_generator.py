@@ -4,11 +4,12 @@ import re
 from collections import defaultdict
 
 JSON_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../01_zotero_export/library.json"))
+ALIASES_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../01_zotero_export/aliases.json"))
 OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../04_researchers/drafts"))
 DEEP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../03_deep"))
 BRIEF_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../02_cards"))
 QUICK_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../02_cards/quick"))
-MIN_PAPERS_THRESHOLD = 3
+MIN_PAPERS_THRESHOLD = 1
 
 def get_card_metadata(citekey: str) -> str:
     rating = ""
@@ -45,6 +46,16 @@ def generate_researcher_cards():
 
     items = data if isinstance(data, list) else data.get("items", [])
     
+    # Load aliases
+    aliases = {}
+    if os.path.exists(ALIASES_PATH):
+        try:
+            with open(ALIASES_PATH, "r", encoding="utf-8") as f:
+                alias_data = json.load(f)
+                aliases = alias_data.get("researchers", {})
+        except Exception as e:
+            print(f"Warning: Could not read aliases.json: {e}")
+    
     # Tally papers per author
     author_papers = defaultdict(list)
     
@@ -61,7 +72,9 @@ def generate_researcher_cards():
             full_name = f"{given} {family}".strip()
             
             if full_name:
-                author_papers[full_name].append({
+                # Map to primary name if alias exists
+                primary_name = aliases.get(full_name, full_name)
+                author_papers[primary_name].append({
                     "citekey": citekey,
                     "title": title
                 })
@@ -77,6 +90,7 @@ def generate_researcher_cards():
         # Check if we should overwrite
         should_write = True
         existing_profile = ""
+        existing_processed_tags = set()
         if os.path.exists(filepath):
             with open(filepath, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -85,6 +99,14 @@ def generate_researcher_cards():
                 should_write = False
             else:
                 existing_profile = content.split("---")[-1].strip() # Keep any existing profile text just in case
+                
+                # Extract existing processed tags
+                for line in content.splitlines():
+                    match = re.search(r'-\s+\[\[(.*?)\]\]\s*\[PROCESSED\]', line)
+                    if match:
+                        link_target = match.group(1).split("|")[0]
+                        base_citekey = link_target.split("/")[-1].replace("_deep", "").replace(".md", "")
+                        existing_processed_tags.add(base_citekey)
 
         if not should_write:
             continue
@@ -104,7 +126,9 @@ def generate_researcher_cards():
                 link_target = f"02_cards/quick/{citekey}|{citekey}"
                 
             formatted_title = get_card_metadata(citekey).format(title=p['title'])
-            links.append(f"- [[{link_target}]] : {formatted_title}")
+            
+            processed_marker = " [PROCESSED]" if citekey in existing_processed_tags else ""
+            links.append(f"- [[{link_target}]]{processed_marker} : {formatted_title}")
         
         links_list = "\n".join(links)
 

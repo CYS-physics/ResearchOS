@@ -5,6 +5,9 @@ import re
 JSON_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../01_zotero_export/library.json"))
 OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../02_cards/quick"))
 BRAIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../brain"))
+RESEARCHERS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../04_researchers"))
+KEYWORDS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../05_keywords"))
+ALIASES_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../01_zotero_export/aliases.json"))
 
 def load_keywords():
     keywords = []
@@ -35,6 +38,36 @@ def load_keywords():
             
     return keywords
 
+def flag_affected_profiles_as_modified(citekey: str):
+    affected_profiles = []
+    search_dirs = [RESEARCHERS_DIR, KEYWORDS_DIR]
+    
+    for directory in search_dirs:
+        if not os.path.exists(directory):
+            continue
+            
+        for filename in os.listdir(directory):
+            if not filename.endswith(".md") or filename.endswith(".update.md"):
+                continue
+                
+            filepath = os.path.join(directory, filename)
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    
+                # Look for the citekey in the content (usually in links)
+                if citekey in content:
+                    if "status: deep_processed" in content:
+                        new_content = content.replace("status: deep_processed", "status: modified")
+                        with open(filepath, "w", encoding="utf-8") as f:
+                            f.write(new_content)
+                        affected_profiles.append(filename.replace(".md", ""))
+            except Exception as e:
+                print(f"    Error reading profile for flagging {filename}: {e}")
+                
+    if affected_profiles:
+        print(f"    Flagged profiles as modified: {', '.join(affected_profiles)}")
+
 def generate_quick_cards():
     if not os.path.exists(JSON_PATH):
         print(f"Error: {JSON_PATH} not found.")
@@ -50,6 +83,18 @@ def generate_quick_cards():
         items = data
     else:
         items = data.get("items", [])
+        
+    # Load aliases
+    researcher_aliases = {}
+    keyword_aliases = {}
+    if os.path.exists(ALIASES_PATH):
+        try:
+            with open(ALIASES_PATH, "r", encoding="utf-8") as f:
+                alias_data = json.load(f)
+                researcher_aliases = alias_data.get("researchers", {})
+                keyword_aliases = alias_data.get("keywords", {})
+        except Exception as e:
+            print(f"Warning: Could not read aliases.json: {e}")
         
     keywords = load_keywords()
     count = 0
@@ -69,11 +114,14 @@ def generate_quick_cards():
             given = author.get("given", "")
             full_name = f"{given} {family}".strip()
             if full_name:
-                safe_name = "".join(c for c in full_name if c.isalnum() or c in ('-', '_', ' ')).strip()
-                if safe_name != full_name:
-                    authors.append(f"[[{safe_name}|{full_name}]]")
+                # Apply alias mapping
+                primary_name = researcher_aliases.get(full_name, full_name)
+                
+                safe_name = "".join(c for c in primary_name if c.isalnum() or c in ('-', '_', ' ')).strip()
+                if safe_name != primary_name:
+                    authors.append(f"[[{safe_name}|{primary_name}]]")
                 else:
-                    authors.append(f"[[{full_name}]]")
+                    authors.append(f"[[{primary_name}]]")
         author_str = ", ".join(authors) if authors else "Unknown"
         
         # Extract year
@@ -112,7 +160,9 @@ def generate_quick_cards():
         for kw in keywords:
             kw_clean = kw.replace('_', ' ').lower()
             if kw_clean in search_text or kw.lower() in search_text:
-                matched_tags.append(kw)
+                # Apply alias mapping to keyword tags
+                mapped_kw = keyword_aliases.get(kw.lower(), kw)
+                matched_tags.append(mapped_kw)
                 
         tags_yaml = ", ".join(f'"{t}"' for t in matched_tags)
             
@@ -156,6 +206,11 @@ status: unread
                 with open(filepath, "w", encoding="utf-8") as out_f:
                     out_f.write(md_content)
                 count += 1
+                
+                # Flag profiles that link to this paper as modified
+                print(f"  Checking affected profiles for {safe_citekey}...")
+                flag_affected_profiles_as_modified(safe_citekey)
+                
             except Exception as e:
                 print(f"Error writing {filepath}: {e}")
 

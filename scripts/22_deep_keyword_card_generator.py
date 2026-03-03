@@ -11,8 +11,10 @@ from google import genai
 env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.env"))
 load_dotenv(dotenv_path=env_path)
 
-gemini_api_key = os.getenv("GEMINI_API_KEY")
-client = genai.Client(api_key=gemini_api_key) if gemini_api_key else None
+# Initialize API clients
+gemini_keys = [v for k, v in os.environ.items() if k.startswith("GEMINI_API_KEY") and v.strip()]
+gemini_clients = [genai.Client(api_key=key) for key in gemini_keys]
+current_gemini_index = 0
 
 openai_api_key = os.getenv("OPENAI_API_KEY")
 openai_client = openai.OpenAI(api_key=openai_api_key) if openai_api_key else None
@@ -27,7 +29,11 @@ BRIEF_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../02_cards
 QUICK_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../02_cards/quick"))
 
 def run_llm_prompt(prompt: str) -> str:
-    if client:
+    global current_gemini_index
+    
+    # Try Gemini clients first, rotating if we hit a 429 quota exhaustion
+    while current_gemini_index < len(gemini_clients):
+        client = gemini_clients[current_gemini_index]
         try:
             response = client.models.generate_content(
                 model='gemini-2.5-flash',
@@ -35,7 +41,17 @@ def run_llm_prompt(prompt: str) -> str:
             )
             return response.text.strip()
         except Exception as e:
-            print(f"  Gemini API failed: {e}. Falling back to OpenAI...")
+            error_str = str(e)
+            if "429" in error_str and "RESOURCE_EXHAUSTED" in error_str:
+                print(f"  Gemini API Key {current_gemini_index + 1} exhausted (429). Rotating to next key...")
+                current_gemini_index += 1
+                continue # Try the next key in the loop
+            else:
+                print(f"  Gemini API failed: {e}. Falling back to OpenAI...")
+                break # Non-quota error, jump to OpenAI fallback
+                
+    if current_gemini_index >= len(gemini_clients) and gemini_clients:
+        print("  All Gemini API keys exhausted.")
             
     if openai_client:
         try:
@@ -130,20 +146,27 @@ def generate_deep_keyword_cards():
             with open(filepath, "r", encoding="utf-8") as f:
                 content = f.read()
 
-            if "status: deep\n" not in content and "status: deep\r" not in content and "status: deep" not in content.splitlines():
+            if "status: deep\n" not in content and "status: deep\r" not in content and "status: deep" not in content.splitlines() and \
+               "status: modified\n" not in content and "status: modified\r" not in content and "status: modified" not in content.splitlines():
                 continue
 
             keyword = filename.replace(".md", "")
-            update_filepath = os.path.join(directory, f"{keyword}.update.md")
+            update_filepath = os.path.join(directory, "_updates", f"{keyword}.update.md")
             print(f"\nProcessing Deep Keyword Card: {keyword}...")
 
-            # Extract citekeys from the card to get abstracts
-            # Format: - [[folder/citekey|citekey]] : Title
-            citekeys = re.findall(r'- \[\[(.*?)\]\]', content)
+            # Extract citekeys from the card to get abstracts, observing [PROCESSED] tags
+            # Format: - [[folder/citekey|citekey]] : Title or - [[folder/citekey|citekey]] [PROCESSED] : Title
+            citekeys = re.findall(r'-\s+\[\[(.*?)\]\](.*)', content)
             
             abstracts_text = []
-            for ck in citekeys:
-                link_target = ck.split("|")[0]
+            new_papers_count = 0
+            
+            for ck_match, rest_of_line in citekeys:
+                if "[PROCESSED]" in rest_of_line:
+                    continue # Skip already processed papers
+                    
+                new_papers_count += 1
+                link_target = ck_match.split("|")[0]
                 base_ck = link_target.split("/")[-1].replace("_deep", "").replace(".md", "")
                 
                 deep_path = os.path.join(DEEP_DIR, f"{base_ck}_deep.md")
@@ -183,44 +206,62 @@ def generate_deep_keyword_cards():
                     abstracts_text.append(paper_content)
 
             papers_text = "\n\n".join(abstracts_text)
+            
+            if new_papers_count == 0:
+                print(f"  No new unprocessed papers found for {keyword}. Skipping...")
+                # Ensure status is reset if it was simply modified but no new papers are found
+                if "status: modified" in content:
+                    new_content = content.replace("status: modified", "status: deep_processed")
+                    with open(filepath, "w", encoding="utf-8") as f:
+                        f.write(new_content)
+                continue
 
             # Extract existing profile content beneath the horizontal rule
             parts = content.split("---")
             previous_profile = ""
+            manual_notes = "\n\n## ✍️ Manual Notes\n*(Add your manual notes here - this section will not be overwritten by AI)*\n"
             if len(parts) >= 3:
                 main_body = "---".join(parts[2:]) 
                 sub_parts = main_body.split("---")
                 if len(sub_parts) > 1:
                     previous_profile = "---".join(sub_parts[1:]).strip()
+                    if "## ✍️ Manual Notes" in previous_profile:
+                        parts_manual = previous_profile.split("## ✍️ Manual Notes", 1)
+                        previous_profile = parts_manual[0].strip()
+                        manual_notes = "\n\n## ✍️ Manual Notes" + parts_manual[1]
 
             prompt = f'''You are an expert academic research assistant maintaining a database of key research concepts.
-Your task is to analyze the consolidated abstracts of papers associated with the keyword "{keyword}" and synthesize a deep conceptual profile based strictly on my personal research context.
+Your task is to analyze the abstracts of NEWLY ADDED papers associated with the keyword "{keyword}", along with my synthesized "Brain" contexts. INCREMENTALLY UPDATE the existing deep conceptual profile based strictly on my personal research context.
+Do NOT rewrite the entire profile from scratch if a "Previous Profile" exists. Instead, integrate the new insights into the existing sections, expanding or refining them as necessary.
 
 ### Keyword: {keyword}
 
-### My Research Context:
+### My Research Context (Brain Folder):
 {research_context}
 
-### Papers Tagged with this Keyword:
+### NEW Papers Tagged with this Keyword (to be added to the profile):
 {papers_text}
 
 ### Previous Profile (if any):
 {previous_profile if previous_profile else "(First time generating this profile)"}
 
 ### Task:
-Output valid Markdown format. Do not wrap it in ```markdown codeblocks. Provide EXACTLY these sections:
+Output valid Markdown format. Do not wrap it in ```markdown codeblocks. Provide EXACTLY these sections, updating the previous content with insights from the new papers:
 
 ## 1. Core Definition & Context
-(Define the concept specifically in the context of my 'Key Questions' or 'Core Interests'. How does my research area utilize or define this keyword, based on the provided papers?)
+(Define the concept specifically in the context of my 'Key Questions' or 'Core Interests' outlined in my research context. Synthesize ideas explicitly drawing connections to the concepts present in my research context (if relevant) and how my research area utilizes or defines this keyword, based on the provided papers. Integrate any new definitions or context from the new papers.)
 
 ## 2. Key Debates or Open Questions
-(Based on the abstracts, what are the primary challenges, debates, or active areas of inquiry surrounding this concept?)
+(Based on the abstracts, what are the primary challenges, debates, or active areas of inquiry surrounding this concept? Does my research context highlight any specific gaps? Integrate new debates found in the new papers.)
 
 ## 3. Related Techniques & Methods
-(What specific methodological approaches, theoretical frameworks, or experimental techniques are frequently used to study this concept in the provided literature?)
+(What specific methodological approaches, theoretical frameworks, or experimental techniques are frequently used to study this concept in the provided literature? Add any new techniques found.)
 
-## 4. Update Summary
-(In 1 short paragraph, summarize what is new or what has changed in the understanding of this concept compared to the "Previous Profile". Compare the 'Previous Profile' with what you've learned from the abstracts above. If the Previous profile is empty, simply state "Initial profile generated summarizing X papers.")
+## 4. Connected Brain Concepts
+(List specific files from the "My Research Context (Brain Folder)" above that are strongly related to this keyword. Format them as Obsidian wiki-links using the exact filenames without the .md extension, like [[concept1]], [[concept2]], etc. Explain briefly why they connect. Update this list if the new papers provide new connections.)
+
+## 5. Update Summary
+(In 1 short paragraph, summarize exactly what is new or what has changed in the understanding of this concept *based specifically on the new papers provided above*. If the Previous profile is empty, simply state "Initial profile generated summarizing {new_papers_count} papers.")
 '''
             print(f"  Sending to LLM API...")
             ai_response = run_llm_prompt_with_retry(prompt)
@@ -231,7 +272,7 @@ Output valid Markdown format. Do not wrap it in ```markdown codeblocks. Provide 
                 
             # Parse output properly to separate the update summary
             try:
-                split_parts = ai_response.split("## 4. Update Summary")
+                split_parts = ai_response.split("## 5. Update Summary")
                 profile_content = split_parts[0].strip()
                 update_summary = split_parts[1].strip() if len(split_parts) > 1 else "Update summary not generated properly."
             except Exception:
@@ -241,6 +282,23 @@ Output valid Markdown format. Do not wrap it in ```markdown codeblocks. Provide 
             # Replace status
             new_content = content.replace("status: deep", "status: deep_processed")
             new_content = new_content.replace("- status: deep", "- status: deep_processed")
+            new_content = new_content.replace("status: modified", "status: deep_processed")
+            new_content = new_content.replace("- status: modified", "- status: deep_processed")
+            
+            # Add [PROCESSED] tags to the links we just analyzed
+            def add_processed_tag(match):
+                full_match = match.group(0)
+                link_text = match.group(1)
+                rest_of_line = match.group(2)
+                if "[PROCESSED]" not in rest_of_line:
+                    if ":" in rest_of_line:
+                        parts = rest_of_line.split(":", 1)
+                        return f"- [[{link_text}]] [PROCESSED] :{parts[1]}"
+                    else:
+                        return f"- [[{link_text}]] [PROCESSED]{rest_of_line}"
+                return full_match
+                
+            new_content = re.sub(r'-\s+\[\[(.*?)\]\]([^\n]*)', add_processed_tag, new_content)
             
             # Replace bottom section containing old profile
             front_parts = new_content.split("---")
@@ -251,18 +309,23 @@ Output valid Markdown format. Do not wrap it in ```markdown codeblocks. Provide 
             else:
                 top_body = new_content
                 
-            final_md = f"---{front_parts[1]}---\n{top_body}\n\n---\n{profile_content}\n"
+            final_md = f"---{front_parts[1]}---\n{top_body}{manual_notes}\n\n---\n**Update History:** [[{keyword}.update|View Logs]]\n\n{profile_content}\n"
 
             out_filepath = os.path.join(KEYWORDS_DIR, f"{keyword}.md")
-            out_update_filepath = os.path.join(KEYWORDS_DIR, f"{keyword}.update.md")
+            out_update_dir = os.path.join(KEYWORDS_DIR, "_updates")
+            os.makedirs(out_update_dir, exist_ok=True)
+            out_update_filepath = os.path.join(out_update_dir, f"{keyword}.update.md")
 
             with open(out_filepath, "w", encoding="utf-8") as f:
                 f.write(final_md)
 
             # Append to Update file
-            update_entry = f"\n### {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (Papers Analyzed: {len(citekeys)})\n{update_summary}\n"
+            update_entry = f"\n### {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (New Papers Analyzed: {new_papers_count})\n{update_summary}\n"
+            update_content = ""
+            if not os.path.exists(out_update_filepath):
+                update_content = f"**Main Profile:** [[{keyword}]]\n\n"
             with open(out_update_filepath, "a", encoding="utf-8") as f:
-                f.write(update_entry)
+                f.write(update_content + update_entry)
 
             # Remove old files if they are being moved from drafts
             if directory != KEYWORDS_DIR:

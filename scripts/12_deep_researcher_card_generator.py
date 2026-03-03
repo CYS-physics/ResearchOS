@@ -12,8 +12,10 @@ from google import genai
 env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.env"))
 load_dotenv(dotenv_path=env_path)
 
-gemini_api_key = os.getenv("GEMINI_API_KEY")
-client = genai.Client(api_key=gemini_api_key) if gemini_api_key else None
+# Initialize API clients
+gemini_keys = [v for k, v in os.environ.items() if k.startswith("GEMINI_API_KEY") and v.strip()]
+gemini_clients = [genai.Client(api_key=key) for key in gemini_keys]
+current_gemini_index = 0
 
 openai_api_key = os.getenv("OPENAI_API_KEY")
 openai_client = openai.OpenAI(api_key=openai_api_key) if openai_api_key else None
@@ -28,8 +30,11 @@ BRIEF_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../02_cards
 QUICK_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../02_cards/quick"))
 
 def run_llm_prompt(prompt: str) -> str:
-    # Try Gemini first
-    if client:
+    global current_gemini_index
+    
+    # Try Gemini clients first, rotating if we hit a 429 quota exhaustion
+    while current_gemini_index < len(gemini_clients):
+        client = gemini_clients[current_gemini_index]
         try:
             response = client.models.generate_content(
                 model='gemini-2.5-flash',
@@ -37,7 +42,17 @@ def run_llm_prompt(prompt: str) -> str:
             )
             return response.text.strip()
         except Exception as e:
-            print(f"  Gemini API failed: {e}. Falling back to OpenAI...")
+            error_str = str(e)
+            if "429" in error_str and "RESOURCE_EXHAUSTED" in error_str:
+                print(f"  Gemini API Key {current_gemini_index + 1} exhausted (429). Rotating to next key...")
+                current_gemini_index += 1
+                continue # Try the next key in the loop
+            else:
+                print(f"  Gemini API failed: {e}. Falling back to OpenAI...")
+                break # Non-quota error, jump to OpenAI fallback
+                
+    if current_gemini_index >= len(gemini_clients) and gemini_clients:
+        print("  All Gemini API keys exhausted.")
             
     # Try OpenAI fallback
     if openai_client:
@@ -138,19 +153,27 @@ def generate_deep_researcher_cards():
             with open(filepath, "r", encoding="utf-8") as f:
                 content = f.read()
 
-            if "status: deep\n" not in content and "status: deep\r" not in content and "status: deep" not in content.splitlines():
+            if "status: deep\n" not in content and "status: deep\r" not in content and "status: deep" not in content.splitlines() and \
+               "status: modified\n" not in content and "status: modified\r" not in content and "status: modified" not in content.splitlines():
                 continue
 
             researcher = filename.replace(".md", "")
-            update_filepath = os.path.join(directory, f"{researcher}.update.md")
+            update_filepath = os.path.join(directory, "_updates", f"{researcher}.update.md")
             print(f"\nProcessing Deep Researcher Card: {researcher}...")
 
-            # Extract citekeys from the card to get abstracts
-            citekeys = re.findall(r'- \[\[(.*?)\]\]', content)
+            # Extract citekeys from the card to get abstracts, observing [PROCESSED] tags
+            # Links look like: - [[citekey|Display]] or - [[citekey]] [PROCESSED] : Title
+            citekeys = re.findall(r'-\s+\[\[(.*?)\]\](.*)', content)
             
             abstracts_text = []
-            for ck in citekeys:
-                link_target = ck.split("|")[0]
+            new_papers_count = 0
+            
+            for ck_match, rest_of_line in citekeys:
+                if "[PROCESSED]" in rest_of_line:
+                    continue # Skip already processed papers
+                    
+                new_papers_count += 1
+                link_target = ck_match.split("|")[0]
                 base_ck = link_target.split("/")[-1].replace("_deep", "").replace(".md", "")
                 
                 deep_path = os.path.join(DEEP_DIR, f"{base_ck}_deep.md")
@@ -190,42 +213,57 @@ def generate_deep_researcher_cards():
                     abstracts_text.append(paper_content)
 
             papers_text = "\n\n".join(abstracts_text)
+            
+            if new_papers_count == 0:
+                print(f"  No new unprocessed papers found for {researcher}. Skipping...")
+                # Ensure status is reset if it was simply modified but no new papers are found
+                if "status: modified" in content:
+                    new_content = content.replace("status: modified", "status: deep_processed")
+                    with open(filepath, "w", encoding="utf-8") as f:
+                        f.write(new_content)
+                continue
 
             # Extract existing profile content beneath the horizontal rule
             parts = content.split("---")
             previous_profile = ""
+            manual_notes = "\n\n## ✍️ Manual Notes\n*(Add your manual notes here - this section will not be overwritten by AI)*\n"
             if len(parts) >= 3:
                 # Reconstruct content after frontmatter
                 main_body = "---".join(parts[2:]) 
                 sub_parts = main_body.split("---") # Look for the h-rule separating papers and profile
                 if len(sub_parts) > 1:
                     previous_profile = "---".join(sub_parts[1:]).strip()
+                    if "## ✍️ Manual Notes" in previous_profile:
+                        parts_manual = previous_profile.split("## ✍️ Manual Notes", 1)
+                        previous_profile = parts_manual[0].strip()
+                        manual_notes = "\n\n## ✍️ Manual Notes" + parts_manual[1]
 
             prompt = f'''You are an expert academic research assistant maintaining a database of key researchers.
-Your task is to analyze the consolidated abstracts of a researcher and synthesize their profile based strictly on my personal research context.
+Your task is to analyze the abstracts of NEWLY ADDED papers by a researcher, and INCREMENTALLY UPDATE their existing profile based strictly on my personal research context.
+Do NOT rewrite the entire profile from scratch if a "Previous Profile" exists. Instead, integrate the new insights into the existing sections, expanding or refining them as necessary.
 
 ### Researcher Name: {researcher}
 
 ### My Research Context:
 {research_context}
 
-### Papers by this Researcher:
+### NEW Papers by this Researcher (to be added to the profile):
 {papers_text}
 
 ### Previous Profile (if any):
 {previous_profile if previous_profile else "(First time generating this profile)"}
 
 ### Task:
-Output valid Markdown format. Do not wrap it in ```markdown codeblocks. Provide EXACTLY these sections:
+Output valid Markdown format. Do not wrap it in ```markdown codeblocks. Provide EXACTLY these sections, updating the previous content with insights from the new papers:
 
 ## 1. Core Keywords
-(Provide 5-8 specific keywords or tags representing their overarching research focus. Format them as hashtags separated by spaces, e.g., #active_matter #machine_learning)
+(Provide 5-8 specific keywords or tags representing their overarching research focus. Format them as hashtags separated by spaces, e.g., #active_matter #machine_learning. Retain and update existing tags.)
 
 ## 2. Key Research Questions & Focus
-(In 2-3 paragraphs, summarize what fundamental questions this researcher is trying to answer across their body of work. Highlight specifically how their focus overlaps with my 'Key Questions' or 'Core Interests'.)
+(In 2-3 paragraphs, summarize what fundamental questions this researcher is trying to answer across their body of work. Integrate new findings into the existing summary. Highlight specifically how their focus overlaps with my 'Key Questions' or 'Core Interests'.)
 
 ## 3. Update Summary
-(In 1 short paragraph, summarize what is new or what has changed in their research focus compared to the "Previous Profile". Compare the 'Previous Profile' with what you've learned from the abstracts above. If the Previous profile is empty, simply state "Initial profile generated summarizing X papers.")
+(In 1 short paragraph, summarize exactly what is new or what has changed in their research focus *based specifically on the new papers provided above*. If the Previous profile is empty, simply state "Initial profile generated summarizing {new_papers_count} papers.")
 '''
             print(f"  Sending to LLM API...")
             ai_response = run_llm_prompt_with_retry(prompt)
@@ -246,7 +284,25 @@ Output valid Markdown format. Do not wrap it in ```markdown codeblocks. Provide 
             # Replace status
             new_content = content.replace("status: deep", "status: deep_processed")
             new_content = new_content.replace("- status: deep", "- status: deep_processed")
+            new_content = new_content.replace("status: modified", "status: deep_processed")
+            new_content = new_content.replace("- status: modified", "- status: deep_processed")
             
+            # Add [PROCESSED] tags to the links we just analyzed
+            def add_processed_tag(match):
+                full_match = match.group(0)
+                link_text = match.group(1)
+                rest_of_line = match.group(2)
+                if "[PROCESSED]" not in rest_of_line:
+                    # In case there's already some text like " : Title", insert [PROCESSED] before the colon
+                    if ":" in rest_of_line:
+                        parts = rest_of_line.split(":", 1)
+                        return f"- [[{link_text}]] [PROCESSED] :{parts[1]}"
+                    else:
+                        return f"- [[{link_text}]] [PROCESSED]{rest_of_line}"
+                return full_match
+                
+            new_content = re.sub(r'-\s+\[\[(.*?)\]\]([^\n]*)', add_processed_tag, new_content)
+
             # Add key_researchers tag
             if "key_researchers" not in new_content:
                 new_content = new_content.replace('tags: ["researcher"]', 'tags: ["researcher", "key_researchers"]')
@@ -261,18 +317,23 @@ Output valid Markdown format. Do not wrap it in ```markdown codeblocks. Provide 
             else:
                 top_body = new_content
                 
-            final_md = f"---{front_parts[1]}---\n{top_body}\n\n---\n{profile_content}\n"
+            final_md = f"---{front_parts[1]}---\n{top_body}{manual_notes}\n\n---\n**Update History:** [[{researcher}.update|View Logs]]\n\n{profile_content}\n"
 
             out_filepath = os.path.join(KEY_PEOPLE_DIR, f"{researcher}.md")
-            out_update_filepath = os.path.join(KEY_PEOPLE_DIR, f"{researcher}.update.md")
+            out_update_dir = os.path.join(KEY_PEOPLE_DIR, "_updates")
+            os.makedirs(out_update_dir, exist_ok=True)
+            out_update_filepath = os.path.join(out_update_dir, f"{researcher}.update.md")
 
             with open(out_filepath, "w", encoding="utf-8") as f:
                 f.write(final_md)
 
             # Append to Update file
-            update_entry = f"\n### {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (Papers Analyzed: {len(citekeys)})\n{update_summary}\n"
+            update_entry = f"\n### {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (New Papers Analyzed: {new_papers_count})\n{update_summary}\n"
+            update_content = ""
+            if not os.path.exists(out_update_filepath):
+                update_content = f"**Main Profile:** [[{researcher}]]\n\n"
             with open(out_update_filepath, "a", encoding="utf-8") as f:
-                f.write(update_entry)
+                f.write(update_content + update_entry)
 
             # Remove old files if they are being moved from 05_cards_people
             if directory != KEY_PEOPLE_DIR:

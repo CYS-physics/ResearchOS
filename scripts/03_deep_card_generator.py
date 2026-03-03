@@ -13,8 +13,9 @@ env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.env"))
 load_dotenv(dotenv_path=env_path)
 
 # Initialize API clients
-gemini_api_key = os.getenv("GEMINI_API_KEY")
-client = genai.Client(api_key=gemini_api_key) if gemini_api_key else None
+gemini_keys = [v for k, v in os.environ.items() if k.startswith("GEMINI_API_KEY") and v.strip()]
+gemini_clients = [genai.Client(api_key=key) for key in gemini_keys]
+current_gemini_index = 0
 
 openai_api_key = os.getenv("OPENAI_API_KEY")
 openai_client = openai.OpenAI(api_key=openai_api_key) if openai_api_key else None
@@ -96,7 +97,10 @@ def run_llm_with_pdf(prompt: str, pdf_path: str) -> str:
     """
     Tries Gemini with PDF upload first, falls back to OpenAI with text extraction.
     """
-    if client:
+    global current_gemini_index
+    
+    while current_gemini_index < len(gemini_clients):
+        client = gemini_clients[current_gemini_index]
         uploaded_file = None
         try:
             uploaded_file = client.files.upload(file=pdf_path)
@@ -114,15 +118,32 @@ def run_llm_with_pdf(prompt: str, pdf_path: str) -> str:
                 return response.text.strip()
             else:
                 print("    Failed to process PDF in Gemini, state was FAILED.")
+                break # Non-quota error, break out of Gemini loop
         except Exception as e:
-            print(f"    Gemini API failed: {e}. Falling back to OpenAI...")
+            error_str = str(e)
+            if "429" in error_str and "RESOURCE_EXHAUSTED" in error_str:
+                print(f"    Gemini API Key {current_gemini_index + 1} exhausted (429). Rotating to next key...")
+                current_gemini_index += 1
+                # Clean up uploaded file before continuing
+                if uploaded_file:
+                    try:
+                        client.files.delete(name=uploaded_file.name)
+                    except:
+                        pass
+                continue # Try the next key
+            else:
+                print(f"    Gemini API failed: {e}. Falling back to OpenAI...")
+                break # Non-quota error, fall back to OpenAI
         finally:
-            # Clean up uploaded file
-            if uploaded_file:
+            # Clean up uploaded file if we are exiting or breaking
+            if uploaded_file and "429" not in str(e if 'e' in locals() else ""):
                 try:
                     client.files.delete(name=uploaded_file.name)
                 except:
                     pass
+
+    if current_gemini_index >= len(gemini_clients) and gemini_clients:
+        print("    All Gemini API keys exhausted.")
 
     if openai_client:
         print("    Using OpenAI fallback, extracting PDF text locally...")
@@ -280,7 +301,14 @@ Output valid Markdown format. Do not wrap it in ```markdown codeblocks. Use exac
             print(f"  Failed to get a response for {citekey}. Skipping.")
             continue
 
+        manual_notes = "\n\n## ✍️ Manual Notes\n*(Add your manual notes here - this section will not be overwritten by AI)*\n"
         deep_filepath = os.path.join(OUTPUT_DIR, f"{citekey}_deep.md")
+        if os.path.exists(deep_filepath):
+            with open(deep_filepath, "r", encoding="utf-8") as existing_df:
+                existing_content = existing_df.read()
+                if "## ✍️ Manual Notes" in existing_content:
+                    manual_notes = "\n\n## ✍️ Manual Notes" + existing_content.split("## ✍️ Manual Notes", 1)[1]
+
         deep_frontmatter = f'''---
 aliases: ["{citekey}_deep"]
 tags: ["deepcard"]
@@ -292,7 +320,7 @@ related: ["[[02_cards/{citekey}|{citekey}]]"]
 
 '''
         with open(deep_filepath, "w", encoding="utf-8") as df:
-            df.write(deep_frontmatter + ai_response)
+            df.write(deep_frontmatter + manual_notes.strip() + '\n\n' + ai_response)
 
         # Update original card status
         new_content = content.replace("status: deep", "status: deep_processed")
