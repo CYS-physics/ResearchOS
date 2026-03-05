@@ -189,28 +189,10 @@ def run_llm_with_pdf_retry(prompt: str, pdf_path: str, max_retries: int = 3) -> 
                 return ""
     return ""
 
+import brain_utils
+
 def load_research_context() -> str:
-    if not os.path.exists(BRAIN_DIR):
-        print(f"Warning: Brain directory not found at {BRAIN_DIR}")
-        return "No specific user context provided."
-        
-    context_parts = []
-    for filename in os.listdir(BRAIN_DIR):
-        if not filename.endswith(".md"):
-            continue
-            
-        filepath = os.path.join(BRAIN_DIR, filename)
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                content = f.read()
-                context_parts.append(f"--- Context from {filename} ---\n{content}\n")
-        except Exception as e:
-            print(f"Error reading brain file {filename}: {e}")
-            
-    if not context_parts:
-        return "No specific user context provided."
-        
-    return "\n".join(context_parts)
+    return brain_utils.load_brain_context(BRAIN_DIR)
 
 def generate_deep_cards():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -323,8 +305,8 @@ related: ["[[02_cards/{citekey}|{citekey}]]"]
             df.write(deep_frontmatter + manual_notes.strip() + '\n\n' + ai_response)
 
         # Update original card status
-        new_content = content.replace("status: deep", "status: deep_processed")
-        new_content = new_content.replace("- status: deep", "- status: deep_processed")
+        new_content = re.sub(r'\bstatus:\s*deep\b', 'status: deep_processed', content)
+        new_content = re.sub(r'-\s*status:\s*deep\b', '- status: deep_processed', new_content)
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(new_content)
 

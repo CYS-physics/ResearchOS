@@ -2,8 +2,10 @@ import os
 import json
 
 ALIASES_PATH = "/Users/siksik/내 드라이브/obsidian/ResearchOS/01_zotero_export/aliases.json"
-RESEARCHERS_DIR = "/Users/siksik/내 드라이브/obsidian/ResearchOS/04_researchers/drafts"
-KEYWORDS_DIR = "/Users/siksik/내 드라이브/obsidian/ResearchOS/05_keywords/drafts"
+RESEARCHERS_DRAFT_DIR = "/Users/siksik/내 드라이브/obsidian/ResearchOS/04_researchers/drafts"
+RESEARCHERS_MAIN_DIR = "/Users/siksik/내 드라이브/obsidian/ResearchOS/04_researchers"
+KEYWORDS_DRAFT_DIR = "/Users/siksik/내 드라이브/obsidian/ResearchOS/05_keywords/drafts"
+KEYWORDS_MAIN_DIR = "/Users/siksik/내 드라이브/obsidian/ResearchOS/05_keywords"
 
 def clean_old_aliases():
     if not os.path.exists(ALIASES_PATH):
@@ -25,12 +27,13 @@ def clean_old_aliases():
             continue
             
         safe_variant = "".join(c for c in variant if c.isalnum() or c in ('-', '_', ' ')).strip()
-        filepath = os.path.join(RESEARCHERS_DIR, f"{safe_variant}.md")
         
-        if os.path.exists(filepath):
-            os.remove(filepath)
-            print(f"  🗑️ Deleted old variant: {safe_variant}.md (Mapped to {primary})")
-            deleted_count += 1
+        for directory in [RESEARCHERS_DRAFT_DIR, RESEARCHERS_MAIN_DIR]:
+            filepath = os.path.join(directory, f"{safe_variant}.md")
+            if os.path.exists(filepath):
+                os.remove(filepath)
+                print(f"  🗑️ Deleted old variant: {filepath} (Mapped to {primary})")
+                deleted_count += 1
             
     # Clean Keywords
     print("\nCleaning Keyword Aliases...")
@@ -39,12 +42,13 @@ def clean_old_aliases():
             continue
             
         safe_variant = "".join(c for c in variant if c.isalnum() or c in ('-', '_')).strip()
-        filepath = os.path.join(KEYWORDS_DIR, f"{safe_variant}.md")
         
-        if os.path.exists(filepath):
-            os.remove(filepath)
-            print(f"  🗑️ Deleted old variant: {safe_variant}.md (Mapped to {primary})")
-            deleted_count += 1
+        for directory in [KEYWORDS_DRAFT_DIR, KEYWORDS_MAIN_DIR]:
+            filepath = os.path.join(directory, f"{safe_variant}.md")
+            if os.path.exists(filepath):
+                os.remove(filepath)
+                print(f"  🗑️ Deleted old variant: {filepath} (Mapped to {primary})")
+                deleted_count += 1
 
     print(f"\nCleanup complete. Removed {deleted_count} obsolete files.")
 

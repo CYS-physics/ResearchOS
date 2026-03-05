@@ -83,28 +83,10 @@ def run_llm_prompt_with_retry(prompt: str, max_retries: int = 3) -> str:
                 return ""
     return ""
 
+import brain_utils
+
 def load_research_context() -> str:
-    if not os.path.exists(BRAIN_DIR):
-        print(f"Warning: Brain directory not found at {BRAIN_DIR}")
-        return "No specific user context provided."
-        
-    context_parts = []
-    for filename in os.listdir(BRAIN_DIR):
-        if not filename.endswith(".md"):
-            continue
-            
-        filepath = os.path.join(BRAIN_DIR, filename)
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                content = f.read()
-                context_parts.append(f"--- Context from {filename} ---\n{content}\n")
-        except Exception as e:
-            print(f"Error reading brain file {filename}: {e}")
-            
-    if not context_parts:
-        return "No specific user context provided."
-        
-    return "\n".join(context_parts)
+    return brain_utils.load_brain_context(BRAIN_DIR)
 
 def generate_brief_cards():
     research_context = load_research_context()
@@ -177,8 +159,8 @@ Output valid Markdown format. Do not wrap it in ```markdown codeblocks. Provide 
             manual_notes = "\n\n## ✍️ Manual Notes" + content.split("## ✍️ Manual Notes", 1)[1]
 
         # Append to content and replace status
-        new_content = content.replace("status: brief", "status: brief_processed")
-        new_content = new_content.replace("- status: brief", "- status: brief_processed")
+        new_content = re.sub(r'\bstatus:\s*brief\b', 'status: brief_processed', content)
+        new_content = re.sub(r'-\s*status:\s*brief\b', '- status: brief_processed', new_content)
         if "## ✍️ Manual Notes" in new_content:
             new_content = new_content.split("## ✍️ Manual Notes", 1)[0].strip()
         
@@ -192,6 +174,10 @@ Output valid Markdown format. Do not wrap it in ```markdown codeblocks. Provide 
             final_content = new_content + "\n\n" + manual_notes.strip() + "\n\n" + backlink + ai_response
 
         with open(filepath_out, "w", encoding="utf-8") as f:
+            f.write(final_content)
+
+        # Update the original input file status so it's not processed again
+        with open(filepath_in, "w", encoding="utf-8") as f:
             f.write(final_content)
 
         print(f"  ✅ Updated {citekey}.md with Brief analysis.")

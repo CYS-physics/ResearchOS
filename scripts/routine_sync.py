@@ -32,10 +32,14 @@ def main():
     
     scripts_to_run = [
         "01_quick_card_generator.py",
+        "01c_merge_duplicate_cards.py",
+        "find_duplicates.py",
+        "clean_aliases.py",
+        "31b_update_alias_links.py",
         "11_researcher_card_generator.py",
         "21_keyword_card_generator.py",
         "32_update_all_links.py",
-        "33_check_publication_updates.py"
+        "33_generate_preprint_index.py"
     ]
     
     for script in scripts_to_run:
@@ -47,7 +51,7 @@ def main():
     print("\n" + "="*50)
     print("✨ Routine Sync Complete!")
     print("Your quick cards are updated, aliases are merged, and links are synced.")
-    print("Checked for live preprint publication updates via web APIs.")
+    print("A Preprint Index was generated.")
     print("Any profiles affected by new papers have been flagged as 'modified'.")
     print("When you have API quota available, you can manually run 12_ and 22_ deep generators.")
     print("="*50)

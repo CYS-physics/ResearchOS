@@ -9,34 +9,10 @@ RESEARCHERS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../04
 KEYWORDS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../05_keywords"))
 ALIASES_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../01_zotero_export/aliases.json"))
 
+import brain_utils
+
 def load_keywords():
-    keywords = []
-    if not os.path.exists(BRAIN_DIR):
-        print(f"Warning: Brain directory not found at {BRAIN_DIR}")
-        return keywords
-        
-    for filename in os.listdir(BRAIN_DIR):
-        if not filename.endswith(".md"):
-            continue
-            
-        filepath = os.path.join(BRAIN_DIR, filename)
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                content = f.read()
-            if "## 3. Important Keywords" in content:
-                kw_section = content.split("## 3. Important Keywords")[1]
-                # To prevent bleeding into other sections
-                if "##" in kw_section:
-                    kw_section = kw_section.split("##")[0]
-                for word in kw_section.split():
-                    if word.startswith('#'):
-                        kw = word.strip('#, \n')
-                        if kw and kw not in keywords:
-                            keywords.append(kw)
-        except Exception as e:
-            print(f"Error reading brain file {filename}: {e}")
-            
-    return keywords
+    return brain_utils.load_brain_keywords(BRAIN_DIR)
 
 def flag_affected_profiles_as_modified(citekey: str):
     affected_profiles = []

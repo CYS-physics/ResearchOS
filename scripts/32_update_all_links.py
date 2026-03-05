@@ -34,7 +34,7 @@ def get_card_metadata(citekey: str) -> str:
     return f"{rating}{{title}}{deep_tag}"
 
 def update_all_links():
-    search_dirs = [PEOPLE_DRAFT_DIR, PEOPLE_DIR, KEYWORDS_DRAFT_DIR, KEYWORDS_DIR]
+    search_dirs = [PEOPLE_DRAFT_DIR, PEOPLE_DIR, KEYWORDS_DRAFT_DIR, KEYWORDS_DIR, DEEP_DIR]
     
     updated_count = 0
 

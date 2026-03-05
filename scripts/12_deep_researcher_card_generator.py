@@ -96,28 +96,10 @@ def run_llm_prompt_with_retry(prompt: str, max_retries: int = 3) -> str:
                 return ""
     return ""
 
+import brain_utils
+
 def load_research_context() -> str:
-    if not os.path.exists(BRAIN_DIR):
-        print(f"Warning: Brain directory not found at {BRAIN_DIR}")
-        return "No specific user context provided."
-        
-    context_parts = []
-    for filename in os.listdir(BRAIN_DIR):
-        if not filename.endswith(".md"):
-            continue
-            
-        filepath = os.path.join(BRAIN_DIR, filename)
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                content = f.read()
-                context_parts.append(f"--- Context from {filename} ---\n{content}\n")
-        except Exception as e:
-            print(f"Error reading brain file {filename}: {e}")
-            
-    if not context_parts:
-        return "No specific user context provided."
-        
-    return "\n".join(context_parts)
+    return brain_utils.load_brain_context(BRAIN_DIR)
 
 def generate_deep_researcher_cards():
     research_context = load_research_context()
@@ -218,7 +200,7 @@ def generate_deep_researcher_cards():
                 print(f"  No new unprocessed papers found for {researcher}. Skipping...")
                 # Ensure status is reset if it was simply modified but no new papers are found
                 if "status: modified" in content:
-                    new_content = content.replace("status: modified", "status: deep_processed")
+                    new_content = re.sub(r'\bstatus:\s*modified\b', 'status: deep_processed', content)
                     with open(filepath, "w", encoding="utf-8") as f:
                         f.write(new_content)
                 continue
@@ -282,10 +264,10 @@ Output valid Markdown format. Do not wrap it in ```markdown codeblocks. Provide 
                 update_summary = "Failed to parse update summary."
 
             # Replace status
-            new_content = content.replace("status: deep", "status: deep_processed")
-            new_content = new_content.replace("- status: deep", "- status: deep_processed")
-            new_content = new_content.replace("status: modified", "status: deep_processed")
-            new_content = new_content.replace("- status: modified", "- status: deep_processed")
+            new_content = re.sub(r'\bstatus:\s*deep\b', 'status: deep_processed', content)
+            new_content = re.sub(r'-\s*status:\s*deep\b', '- status: deep_processed', new_content)
+            new_content = re.sub(r'\bstatus:\s*modified\b', 'status: deep_processed', new_content)
+            new_content = re.sub(r'-\s*status:\s*modified\b', '- status: deep_processed', new_content)
             
             # Add [PROCESSED] tags to the links we just analyzed
             def add_processed_tag(match):
@@ -336,13 +318,25 @@ Output valid Markdown format. Do not wrap it in ```markdown codeblocks. Provide 
                 f.write(update_content + update_entry)
 
             # Remove old files if they are being moved from 05_cards_people
+            # Remove old files if they are being moved from 04_researchers/drafts
             if directory != KEY_PEOPLE_DIR:
                 try:
+                    # Update status of the original file instead of removing it,
+                    # or if the logic is to remove it because it's moving from drafts,
+                    # then the original file status logic is not needed for the new file,
+                    # but we are processing a file that has `status: deep` or `status: modified`
+                    # so we need to make sure the original file status is updated.
+                    # Since it is removing the file, we update the original 'f' file which is 'filepath'
+                    # which is what's being removed. So updating the status of 'filepath' is just
+                    # keeping the logic of line 203.
                     os.remove(filepath)
                     if os.path.exists(update_filepath):
                         os.remove(update_filepath)
                 except Exception as e:
                     print(f"  Warning: could not remove old file {filepath}: {e}")
+            else:
+                 with open(filepath, "w", encoding="utf-8") as f:
+                    f.write(new_content)
 
             print(f"  ✅ Updated {researcher}.md and appended to .update.md in 04_researchers")
             processed_count += 1

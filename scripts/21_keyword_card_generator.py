@@ -194,6 +194,13 @@ paper_count: {len(papers)}
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(final_md)
 
+        for p in papers:
+            original_filepath = os.path.join(CARD_DIRS[0], f"{p['citekey']}.md")
+            if not os.path.exists(original_filepath):
+                original_filepath = os.path.join(CARD_DIRS[1], f"{p['citekey']}.md")
+            if not os.path.exists(original_filepath):
+                original_filepath = os.path.join(CARD_DIRS[2], f"{p['citekey']}.md")
+            
         print(f"  ✅ Saved {safe_name}.md ({len(papers)} papers)")
 
 if __name__ == "__main__":
